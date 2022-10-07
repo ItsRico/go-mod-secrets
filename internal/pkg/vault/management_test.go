@@ -18,6 +18,7 @@ package vault
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	url2 "net/url"
@@ -35,7 +36,8 @@ import (
 )
 
 const (
-	expectedToken = "fake-token"
+	expectedToken      = "fake-token"
+	testBootstrapToken = "test-bootstrap-token"
 )
 
 func TestHealthCheck(t *testing.T) {
@@ -331,8 +333,6 @@ func TestCheckSecretEngineNotInstalled(t *testing.T) {
 						"max_lease_ttl": 0
 					},
 					"description": "system endpoints used for control, policy and debugging",
-					"local": false,
-					"options": null,
 					"seal_wrap": false,
 					"type": "system"
 				}
@@ -427,6 +427,81 @@ func TestEnableConsulSecretEngine(t *testing.T) {
 
 	// Assert
 	require.NoError(t, err)
+}
+
+func TestConfigureConsulAccess(t *testing.T) {
+	mockLogger := logger.MockLogger{}
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer ts.Close()
+	client := createClient(t, ts.URL, mockLogger)
+	err := client.ConfigureConsulAccess(expectedToken, testBootstrapToken, "test-host", 8888)
+	require.NoError(t, err)
+}
+
+func TestCreateRole(t *testing.T) {
+	testSinglePolicy := []types.Policy{
+		{
+			ID:   "test-ID",
+			Name: "test-name",
+		},
+	}
+	testMultiplePolicies := []types.Policy{
+		{
+			ID:   "test-ID1",
+			Name: "test-name1",
+		},
+		{
+			ID:   "test-ID2",
+			Name: "test-name2",
+		},
+	}
+
+	testRoleWithNilPolicy := types.NewRegistryRole("testRoleSingle", "client", nil, true)
+	testRoleWithEmptyPolicy := types.NewRegistryRole("testRoleSingle", "client", []types.Policy{}, true)
+	testRoleWithSinglePolicy := types.NewRegistryRole("testRoleSingle", "client", testSinglePolicy, true)
+	testRoleWithMultiplePolicies := types.NewRegistryRole("testRoleMultiple", "client", testMultiplePolicies, true)
+	testEmptyRoleName := types.NewRegistryRole("", "management", testSinglePolicy, true)
+	testCreateRoleErr := errors.New("request to create Role failed with status: 403 Forbidden")
+	testEmptyTokenErr := errors.New("required secret store token is empty")
+	testEmptyRoleNameErr := errors.New("required registry role name is empty")
+
+	tests := []struct {
+		name             string
+		secretstoreToken string
+		registryRole     types.RegistryRole
+		httpStatusCode   int
+		expectedErr      error
+	}{
+		{"Good:create role with single policy ok", "test-secretstore-token", testRoleWithSinglePolicy, http.StatusNoContent, nil},
+		{"Good:create role with multiple policies ok", expectedToken, testRoleWithMultiplePolicies, http.StatusNoContent, nil},
+		{"Good:create role with empty policy ok", expectedToken, testRoleWithEmptyPolicy, http.StatusNoContent, nil},
+		{"Good:create role with nil policy ok", "test-secretstore-token", testRoleWithNilPolicy, http.StatusNoContent, nil},
+		{"Bad:create role bad response", expectedToken, testRoleWithSinglePolicy, http.StatusForbidden, testCreateRoleErr},
+		{"Bad:empty secretstore token", "", testRoleWithMultiplePolicies, http.StatusForbidden, testEmptyTokenErr},
+		{"Bad:empty role name", expectedToken, testEmptyRoleName, http.StatusForbidden, testEmptyRoleNameErr},
+	}
+
+	for _, tt := range tests {
+		test := tt // capture as local copy
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			// prepare test
+			mockLogger := logger.MockLogger{}
+			ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(test.httpStatusCode)
+			}))
+			defer ts.Close()
+			client := createClient(t, ts.URL, mockLogger)
+			err := client.CreateRole(test.secretstoreToken, test.registryRole)
+			if test.expectedErr != nil {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }
 
 func createClient(t *testing.T, url string, lc logger.LoggingClient) *Client {

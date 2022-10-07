@@ -193,3 +193,57 @@ func (c *Client) CheckSecretEngineInstalled(token string, mountPoint string, eng
 
 	return false, nil
 }
+
+// createRole creates a secret store role that can be used to generate registry tokens
+// and part of elements for the role ties up with the registry policies in which it dictates
+// the permission of accesses to the registry kv store or agent etc.
+func (c *Client) CreateRole(secretStoreToken string, registryRole types.RegistryRole) error {
+	if len(secretStoreToken) == 0 {
+		return fmt.Errorf("required secret store token is empty")
+	}
+
+	if len(registryRole.RoleName) == 0 {
+		return fmt.Errorf("required registry role name is empty")
+	}
+
+	createRoleURL := fmt.Sprintf(createConsulRoleVaultAPI, registryRole.RoleName)
+	c.lc.Debugf("configAccessURL: %s", createRoleURL)
+	_, err := c.doRequest(RequestArgs{
+		AuthToken:            secretStoreToken,
+		Method:               http.MethodPost,
+		Path:                 createRoleURL,
+		JSONObject:           &registryRole,
+		BodyReader:           nil,
+		OperationDescription: "create Role",
+		ExpectedStatusCode:   http.StatusNoContent,
+		ResponseObject:       nil,
+	})
+
+	return err
+}
+
+// configureConsulAccess is to enable the Consul config access to the SecretStore via consul/config/access API
+// see the reference: https://www.vaultproject.io/api-docs/secret/consul#configure-access
+func (c *Client) ConfigureConsulAccess(secretStoreToken string, bootstrapACLToken string, registryHost string, registryPort int) error {
+	type ConfigAccess struct {
+		RegistryAddress   string `json:"address"`
+		BootstrapACLToken string `json:"token"`
+	}
+
+	payload := &ConfigAccess{
+		RegistryAddress:   fmt.Sprintf("%s:%d", registryHost, registryPort),
+		BootstrapACLToken: bootstrapACLToken,
+	}
+
+	_, err := c.doRequest(RequestArgs{
+		AuthToken:            secretStoreToken,
+		Method:               http.MethodPost,
+		Path:                 consulConfigAccessVaultAPI,
+		JSONObject:           payload,
+		BodyReader:           nil,
+		OperationDescription: "Configure Consul Access",
+		ExpectedStatusCode:   http.StatusNoContent,
+		ResponseObject:       nil,
+	})
+	return err
+}
